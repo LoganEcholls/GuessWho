@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Qui est ce personnage ?</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#1b1340;--panel:#2a1f5c;--ink:#f6f1ff;--muted:#b9acec;--pink:#ff5c8a;--gold:#ffd23f;--ok:#5ee6a8;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Bricolage Grotesque",system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh;display:flex;justify-content:center;padding:20px 16px}
+main{width:100%;max-width:460px}
+h1{font-size:2rem;font-weight:800;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--muted);margin:0 0 14px}
+.level{display:flex;gap:6px;margin-bottom:14px}
+.level button{flex:1;background:var(--panel);color:var(--muted);padding:8px 6px;font-size:.85rem}
+.level button.on{background:var(--gold);color:#1b1340}
+.stage{position:relative;aspect-ratio:1/1;background:var(--panel);border-radius:18px;overflow:hidden;border:3px solid var(--gold)}
+.stage img{width:100%;height:100%;object-fit:cover;display:block;filter:blur(var(--blur,28px));transform:scale(1.15);transition:filter .6s ease,transform .6s ease}
+.stage.done img{filter:none;transform:scale(1)}
+.load{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--panel);font-weight:700}
+.lives{display:flex;gap:6px;margin:14px 0}
+.lives span{flex:1;height:8px;border-radius:4px;background:var(--panel)}
+.lives span.lost{background:var(--pink)}
+.hints{list-style:none;margin:0 0 14px;padding:0;display:grid;gap:8px}
+.hints li{background:var(--panel);border-radius:10px;padding:10px 14px;animation:pop .3s ease}
+.hints b{color:var(--gold);font-weight:700}
+@keyframes pop{from{transform:scale(.96);opacity:0}to{transform:none;opacity:1}}
+.row{display:flex;gap:8px}
+input{flex:1;min-width:0;font:inherit;font-size:1rem;padding:12px 14px;border-radius:10px;border:2px solid var(--panel);background:#120c2e;color:var(--ink)}
+input:focus-visible,button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+button{font:inherit;font-weight:700;padding:12px 18px;border:0;border-radius:10px;background:var(--pink);color:#fff;cursor:pointer}
+button:disabled{opacity:.5}
+button.alt{background:var(--gold);color:#1b1340;width:100%;margin-top:12px}
+.msg{min-height:1.6em;margin:12px 0 0;font-weight:700}
+.msg.ok{color:var(--ok)}.msg.ko{color:var(--pink)}
+.score,.credit{color:var(--muted);margin-top:14px;font-size:.85rem}
+.hide{display:none}
+@media (prefers-reduced-motion:reduce){.stage img,.hints li{transition:none;animation:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Qui est ce personnage ?</h1>
+  <p class="sub">Chaque erreur dévoile un indice et rend l'image plus nette.</p>
+  <div class="level" id="level">
+    <button type="button" data-m="popular">Populaires</button>
+    <button type="button" data-m="mix" class="on">Mixte</button>
+    <button type="button" data-m="secondary">Secondaires</button>
+  </div>
+  <div class="stage" id="stage"><img id="img" alt="Personnage à deviner" referrerpolicy="no-referrer"><div class="load" id="load">Chargement…</div></div>
+  <div class="lives" id="lives" aria-label="Essais restants"></div>
+  <ul class="hints" id="hints"></ul>
+  <div class="row" id="form">
+    <input id="guess" type="text" placeholder="Ta réponse" autocomplete="off" aria-label="Nom du personnage">
+    <button id="go" type="button">Valider</button>
+  </div>
+  <p class="msg" id="msg" role="status"></p>
+  <button class="alt hide" id="next" type="button">Personnage suivant</button>
+  <p class="score" id="score"></p>
+  <p class="credit">Données : Jikan / MyAnimeList</p>
+</main>
+<script>
+const API = "https://api.jikan.moe/v4";
+const MAX_ERRORS = 6;
+const FR = {"Adventure":"Aventure","Comedy":"Comédie","Drama":"Drame","Horror":"Horreur","Mystery":"Mystère","Sci-Fi":"Science-fiction","Slice of Life":"Tranche de vie","Sports":"Sport","Supernatural":"Surnaturel","Gourmet":"Gastronomie","Avant Garde":"Avant-garde","Boys Love":"Boys Love","Girls Love":"Girls Love"};
+const TYPE_FR = {"Movie":"Film","Music":"Clip","Special":"Épisode spécial"};
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const rand = (a,b) => a + Math.floor(Math.random()*(b-a+1));
+const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ").trim();
+
+let mode = "mix", cur = null, errors = 0, over = true, wins = 0, played = 0, token = 0;
+const pageCache = {};
+
+async function api(path){
+  for(let i=0;i<4;i++){
+    try{
+      const r = await fetch(API + path);
+      if(r.status === 429){ await sleep(1200*(i+1)); continue; }
+      if(!r.ok) throw new Error(r.status);
+      return (await r.json()).data;
+    }catch(e){ if(i===3) throw e; await sleep(800); }
+  }
+  throw new Error("429");
+}
+
+async function pickCharacter(){
+  const pop = mode==="popular" || (mode==="mix" && Math.random()<0.4);
+  const page = pop ? rand(1,4) : rand(5,40);
+  if(!pageCache[page]) pageCache[page] = await api(`/top/characters?page=${page}&limit=25`);
+  const list = pageCache[page];
+  return list[rand(0, list.length-1)];
+}
+
+async function buildRound(){
+  for(let n=0;n<6;n++){
+    const base = await pickCharacter();
+    if(!base || /questionmark/.test(base.images?.jpg?.image_url||"")) continue;
+    await sleep(400);
+    const full = await api(`/characters/${base.mal_id}/full`);
+    const entries = (full.anime||[]);
+    if(!entries.length) continue;
+    const main = entries.filter(e => e.role === "Main");
+    const entry = (main.length ? main : entries)[0];
+    await sleep(400);
+    const anime = await api(`/anime/${entry.anime.mal_id}`);
+    const genres = (anime.genres||[]).map(g => g.name);
+    if(genres.some(g => /hentai|erotica/i.test(g)) || /^Rx/.test(anime.rating||"")) continue;
+    const parts = (full.name||base.name).split(",").map(s => s.trim()).filter(Boolean);
+    const display = parts.slice().reverse().join(" ");
+    const accepted = [display, parts.join(" "), ...parts, ...(full.nicknames||[]), full.name_kanji||""].map(norm).filter(Boolean);
+    const year = anime.year || anime.aired?.prop?.from?.year;
+    return {
+      display, accepted,
+      image: full.images?.jpg?.image_url || base.images.jpg.image_url,
+      hints: [
+        ["Format", (TYPE_FR[anime.type]||anime.type||"Anime") + (year ? ` (${year})` : "")],
+        ["Genres", genres.slice(0,3).map(g => FR[g]||g).join(", ") || "Non précisé"],
+        ["Rôle", entry.role === "Main" ? "Personnage principal" : "Personnage secondaire"],
+        ["Première lettre", display[0].toUpperCase()],
+        ["Nombre de lettres", String(display.replace(/\s/g,"").length)],
+        ["Œuvre d'origine", anime.title_english || anime.title]
+      ],
+      work: anime.title_english || anime.title
+    };
+  }
+  throw new Error("none");
+}
+
+function renderLives(){ $("lives").innerHTML = Array.from({length:MAX_ERRORS},(_,i)=>`<span class="${i<errors?"lost":""}"></span>`).join(""); }
+function setBlur(){ $("stage").style.setProperty("--blur", Math.max(0, 28 - errors*(28/MAX_ERRORS)) + "px"); }
+
+async function newRound(){
+  const my = ++token;
+  over = true; errors = 0;
+  $("stage").classList.remove("done");
+  $("load").classList.remove("hide"); $("load").textContent = "Chargement…";
+  $("hints").innerHTML = ""; $("msg").textContent = ""; $("msg").className = "msg";
+  $("guess").value = ""; $("guess").disabled = true; $("go").disabled = true;
+  $("form").classList.remove("hide"); $("next").classList.add("hide");
+  renderLives(); setBlur();
+  try{
+    const c = await buildRound();
+    if(my !== token) return;
+    cur = c;
+    $("img").onload = () => { $("load").classList.add("hide"); };
+    $("img").src = c.image;
+    over = false; $("guess").disabled = false; $("go").disabled = false; $("guess").focus();
+  }catch(e){
+    if(my !== token) return;
+    $("load").textContent = "Impossible de charger. Réessaie dans un instant.";
+    $("form").classList.add("hide"); $("next").classList.remove("hide"); $("next").textContent = "Réessayer";
+  }
+}
+
+function addHint(){
+  const [label,val] = cur.hints[errors-1];
+  const li = document.createElement("li");
+  const b = document.createElement("b"); b.textContent = label + " : ";
+  li.append(b, document.createTextNode(val));
+  $("hints").appendChild(li);
+}
+function finish(win){
+  over = true; played++; if(win) wins++;
+  $("stage").classList.add("done");
+  $("form").classList.add("hide"); $("next").classList.remove("hide"); $("next").textContent = "Personnage suivant";
+  $("msg").className = "msg " + (win?"ok":"ko");
+  $("msg").textContent = win ? `Bravo, c'était ${cur.display} !` : `Perdu… C'était ${cur.display} (${cur.work}).`;
+  $("score").textContent = `Score : ${wins} / ${played}`;
+  $("next").focus();
+}
+function submit(){
+  if(over) return;
+  const g = norm($("guess").value);
+  if(!g) return;
+  if(cur.accepted.includes(g)) return finish(true);
+  errors++; renderLives(); setBlur();
+  if(errors >= MAX_ERRORS) return finish(false);
+  addHint();
+  $("msg").className = "msg ko"; $("msg").textContent = "Raté, nouvel indice !";
+  $("guess").value = ""; $("guess").focus();
+}
+
+$("go").addEventListener("click", submit);
+$("guess").addEventListener("keydown", e => { if(e.key === "Enter") submit(); });
+$("next").addEventListener("click", newRound);
+$("level").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  mode = b.dataset.m;
+  document.querySelectorAll("#level button").forEach(x => x.classList.toggle("on", x === b));
+  newRound();
+});
+newRound();
+</script>
+</body>
+</html>
